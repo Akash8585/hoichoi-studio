@@ -5,12 +5,14 @@ import { weeklyReportSchema } from "@/lib/validation/schemas";
 
 export async function POST(req: Request) {
   const isCron = req.headers.get("authorization")?.startsWith("Bearer ");
+  let createdById: string | undefined;
   if (isCron) {
     const denied = requireCron(req);
     if (denied) return denied;
   } else {
-    const { error } = await requireEditor();
+    const { error, user } = await requireEditor();
     if (error) return error;
+    createdById = user!.id;
   }
 
   const body = await req.json().catch(() => ({}));
@@ -29,6 +31,7 @@ export async function POST(req: Request) {
   const report = await generateWeeklyReport({
     periodStart: new Date(parsed.data.periodStart),
     periodEnd: new Date(parsed.data.periodEnd),
+    createdById,
   });
   return NextResponse.json({ report });
 }

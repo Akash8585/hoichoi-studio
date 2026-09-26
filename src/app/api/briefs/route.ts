@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { requireEditor, requireSession } from "@/lib/auth/guards";
+import { briefsFor, notFound, ownedReport } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { createBriefSchema } from "@/lib/validation/schemas";
 import { writeAudit } from "@/lib/security/audit";
 import { toJson } from "@/lib/utils";
 
 export async function GET() {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
   const briefs = await prisma.brief.findMany({
+    where: briefsFor(user!.id),
     orderBy: { createdAt: "desc" },
     include: {
       packages: {
@@ -33,6 +35,10 @@ export async function POST(req: Request) {
   const parsed = createBriefSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+  if (parsed.data.sourceReportId) {
+    const report = await ownedReport(user!.id, parsed.data.sourceReportId);
+    if (!report) return notFound();
   }
   const brief = await prisma.brief.create({
     data: {

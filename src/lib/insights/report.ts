@@ -158,6 +158,9 @@ export async function generateWeeklyReport(input: {
         gte: input.periodStart,
         lte: input.periodEnd,
       },
+      ...(input.createdById
+        ? { package: { brief: { createdById: input.createdById } } }
+        : {}),
     },
     include: {
       package: true,

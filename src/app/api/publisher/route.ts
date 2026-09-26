@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { requireEditor, requireSession } from "@/lib/auth/guards";
+import { postsFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { publishDuePosts } from "@/lib/jobs/publishDue";
 import { refreshMetrics } from "@/lib/jobs/metricsRefresh";
 
 export async function GET() {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
   await publishDuePosts().catch(() => undefined);
   const posts = await prisma.post.findMany({
+    where: postsFor(user!.id),
     orderBy: { createdAt: "desc" },
     take: 50,
     include: {

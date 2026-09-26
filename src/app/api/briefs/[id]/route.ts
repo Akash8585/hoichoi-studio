@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/guards";
+import { notFound } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 
 export async function GET(
   _req: Request,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
   const { id } = await ctx.params;
-  const brief = await prisma.brief.findUnique({
-    where: { id },
+  const brief = await prisma.brief.findFirst({
+    where: { id, createdById: user!.id },
     include: {
       packages: {
         include: {
@@ -23,6 +24,6 @@ export async function GET(
       },
     },
   });
-  if (!brief) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!brief) return notFound();
   return NextResponse.json({ brief });
 }

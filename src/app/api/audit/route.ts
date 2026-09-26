@@ -3,9 +3,10 @@ import { requireEditor } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db/prisma";
 
 export async function GET() {
-  const { error } = await requireEditor();
+  const { error, user } = await requireEditor();
   if (error) return error;
   const logs = await prisma.auditLog.findMany({
+    where: { userId: user!.id },
     orderBy: { createdAt: "desc" },
     take: 100,
   });

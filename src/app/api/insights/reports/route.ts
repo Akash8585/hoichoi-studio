@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/guards";
+import { postsFor, reportsFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { channelLabel } from "@/lib/insights/display";
 import { parseJsonArray } from "@/lib/utils";
 
 export async function GET() {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
   const reports = await prisma.weeklyReport.findMany({
+    where: reportsFor(user!.id),
     orderBy: { createdAt: "desc" },
     take: 50,
   });
@@ -16,7 +18,7 @@ export async function GET() {
   ];
   const posts = citedIds.length
     ? await prisma.post.findMany({
-        where: { id: { in: citedIds } },
+        where: { id: { in: citedIds }, ...postsFor(user!.id) },
         select: { id: true, channel: true },
       })
     : [];

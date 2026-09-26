@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth/guards";
 import { rateLimit } from "@/lib/security/rateLimit";
 import { writeAudit } from "@/lib/security/audit";
+import { notFound, ownedBrief } from "@/lib/auth/ownership";
 import { runBriefGeneration } from "@/lib/studio/generate";
 
 export const maxDuration = 300;
@@ -13,6 +14,8 @@ export async function POST(
   const { error, user } = await requireEditor();
   if (error) return error;
   const { id } = await ctx.params;
+  const owned = await ownedBrief(user!.id, id);
+  if (!owned) return notFound();
   const rl = await rateLimit(`generate:${user!.id}`, 20, 60 * 60 * 1000);
   if (!rl.ok) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth/guards";
+import { packagesFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { PLATFORM_SPECS, type Channel } from "@/lib/platforms/specs";
 import { validatePayload } from "@/lib/platforms/adapters";
@@ -14,7 +15,11 @@ export async function POST(req: Request) {
   const spec = PLATFORM_SPECS[channel];
 
   const pkg = await prisma.assetPackage.findFirst({
-    where: { channel, status: { in: ["approved", "pending_approval", "draft"] } },
+    where: {
+      channel,
+      status: { in: ["approved", "pending_approval", "draft"] },
+      ...packagesFor(user!.id),
+    },
     orderBy: { updatedAt: "desc" },
   });
 

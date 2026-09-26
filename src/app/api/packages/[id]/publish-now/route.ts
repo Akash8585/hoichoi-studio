@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth/guards";
+import { notFound, ownedPackage } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { writeAudit } from "@/lib/security/audit";
 import { publishDuePosts } from "@/lib/jobs/publishDue";
@@ -11,8 +12,8 @@ export async function POST(
   const { error, user } = await requireEditor();
   if (error) return error;
   const { id } = await ctx.params;
-  const pkg = await prisma.assetPackage.findUnique({ where: { id } });
-  if (!pkg) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const pkg = await ownedPackage(user!.id, id);
+  if (!pkg) return notFound();
   if (pkg.status !== "approved") {
     return NextResponse.json(
       { error: "Only approved packages can be published" },

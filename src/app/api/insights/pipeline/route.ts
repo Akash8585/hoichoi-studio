@@ -1,27 +1,26 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/guards";
+import { notFound, packagesFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 
 /**
  * Counts packages and posts for the content pipeline sankey.
- * Query: briefId (optional). Without it, counts the whole workspace.
+ * Query: briefId (optional). Counts only the signed in user's campaigns.
  */
 export async function GET(req: Request) {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
 
   const briefId = new URL(req.url).searchParams.get("briefId") || undefined;
 
   if (briefId) {
-    const brief = await prisma.brief.findUnique({
-      where: { id: briefId },
+    const brief = await prisma.brief.findFirst({
+      where: { id: briefId, createdById: user!.id },
       include: {
         packages: { include: { posts: { include: { metrics: { take: 1 } } } } },
       },
     });
-    if (!brief) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
+    if (!brief) return notFound();
     const counts = stageCounts(1, brief.packages);
     return NextResponse.json({
       scope: "campaign",
@@ -32,8 +31,9 @@ export async function GET(req: Request) {
   }
 
   const [briefCount, packages] = await Promise.all([
-    prisma.brief.count(),
+    prisma.brief.count({ where: { createdById: user!.id } }),
     prisma.assetPackage.findMany({
+      where: packagesFor(user!.id),
       include: { posts: { include: { metrics: { take: 1 } } } },
     }),
   ]);

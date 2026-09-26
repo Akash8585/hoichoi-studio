@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth/guards";
+import { notFound } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 
 const CHANNEL_ORDER = ["instagram_reels", "youtube_shorts", "x"] as const;
@@ -9,7 +10,7 @@ const CHANNEL_ORDER = ["instagram_reels", "youtube_shorts", "x"] as const;
  * Returns readings only; the client decides whether a trend chart is honest.
  */
 export async function GET(req: Request) {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
 
   const briefId = new URL(req.url).searchParams.get("briefId");
@@ -17,8 +18,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "briefId is required" }, { status: 400 });
   }
 
-  const brief = await prisma.brief.findUnique({
-    where: { id: briefId },
+  const brief = await prisma.brief.findFirst({
+    where: { id: briefId, createdById: user!.id },
     include: {
       packages: {
         include: {
@@ -33,9 +34,7 @@ export async function GET(req: Request) {
     },
   });
 
-  if (!brief) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!brief) return notFound();
 
   const series = CHANNEL_ORDER.flatMap((channel) => {
     const posts = brief.packages

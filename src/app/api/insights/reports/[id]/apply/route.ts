@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireEditor } from "@/lib/auth/guards";
+import { notFound, ownedReport, postsFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { parseJsonArray } from "@/lib/utils";
 import { writeAudit } from "@/lib/security/audit";
@@ -12,8 +13,8 @@ export async function POST(
   const { error, user } = await requireEditor();
   if (error) return error;
   const { id } = await ctx.params;
-  const report = await prisma.weeklyReport.findUnique({ where: { id } });
-  if (!report) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const report = await ownedReport(user!.id, id);
+  if (!report) return notFound();
 
   const cited = parseJsonArray(report.citedPostIds);
   const claims = JSON.parse(report.claimsJson || "[]") as Array<{
@@ -26,7 +27,7 @@ export async function POST(
     .slice(0, 5);
   const posts = cited.length
     ? await prisma.post.findMany({
-        where: { id: { in: cited } },
+        where: { id: { in: cited }, ...postsFor(user!.id) },
         select: { channel: true },
       })
     : [];

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireEditor, requireSession } from "@/lib/auth/guards";
+import { reportsFor } from "@/lib/auth/ownership";
 import { prisma } from "@/lib/db/prisma";
 import { generateWeeklyReport } from "@/lib/insights/report";
 import { weeklyReportSchema } from "@/lib/validation/schemas";
@@ -7,9 +8,10 @@ import { rateLimit } from "@/lib/security/rateLimit";
 import { parseJsonArray } from "@/lib/utils";
 
 export async function GET() {
-  const { error } = await requireSession();
+  const { error, user } = await requireSession();
   if (error) return error;
   const reports = await prisma.weeklyReport.findMany({
+    where: reportsFor(user!.id),
     orderBy: { createdAt: "desc" },
     take: 20,
   });
