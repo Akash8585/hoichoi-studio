@@ -1,0 +1,228 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  name          String         @default("Editor")
+  email         String         @unique
+  emailVerified Boolean        @default(false)
+  image         String?
+  role          String         @default("editor") // editor | viewer
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  briefs        Brief[]
+  reports       WeeklyReport[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+model Brief {
+  id             String         @id @default(cuid())
+  title          String
+  body           String
+  language       String         @default("both") // bn | en | both
+  brandVoice     String?
+  objective      String?
+  audience       String?
+  mustInclude    String         @default("[]")
+  mustAvoid      String         @default("[]")
+  reviewLanguagePriority String @default("bn")
+  sourceReportId String?
+  sourceReport   WeeklyReport?  @relation(fields: [sourceReportId], references: [id])
+  createdById    String?
+  createdBy      User?          @relation(fields: [createdById], references: [id])
+  generatingAt   DateTime? // concurrent generate lock
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  packages       AssetPackage[]
+}
+
+model AssetPackage {
+  id               String   @id @default(cuid())
+  briefId          String
+  brief            Brief    @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  channel          String // instagram_reels | youtube_shorts | x
+  imageUrl         String?
+  imageWidth       Int?
+  imageHeight      Int?
+  imageBytes       Int?
+  imagePrompt      String?
+  imageStatus      String   @default("pending") // pending | ready | failed
+  imageProvider    String?
+  imageModel       String?
+  videoUrl         String?
+  videoWidth       Int?
+  videoHeight      Int?
+  videoBytes       Int?
+  videoDurationSec Float?
+  videoPrompt      String?
+  videoStatus      String   @default("pending") // pending | generating | ready | failed
+  videoProvider    String?
+  videoModel       String?
+  videoError       String?
+  videoAttempts    Int      @default(0)
+  videoLastAttemptAt DateTime?
+  copyBn           String?
+  copyEn           String?
+  title            String?
+  hashtags         String   @default("[]") // JSON array
+  cta              String?
+  status           String   @default("draft") // draft | pending_approval | approved | discarded
+  rejectionReason  String?
+  rawGeneration    String? // JSON
+  textProvider     String?
+  textModel        String?
+  generationStrategy String?
+  creativeDirection String?
+  qualityChecks    String?
+  revision         Int      @default(1)
+  reviewNotes      String?
+  generatingAt     DateTime? // concurrent regenerate lock
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  posts            Post[]
+
+  @@unique([briefId, channel])
+  @@index([briefId, status])
+}
+
+model Post {
+  id              String           @id @default(cuid())
+  packageId       String
+  package         AssetPackage     @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  channel         String
+  status          String           @default("scheduled") // scheduled | publishing | published | rejected
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  externalMockId  String?
+  idempotencyKey  String           @unique
+  adapterResponse String? // JSON
+  createdAt       DateTime         @default(now())
+  metrics         MetricSnapshot[]
+
+  @@index([status, scheduledAt])
+}
+
+model MetricSnapshot {
+  id          String   @id @default(cuid())
+  postId      String
+  post        Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  likes       Int      @default(0)
+  comments    Int      @default(0)
+  shares      Int      @default(0)
+  views       Int      @default(0)
+  saves       Int      @default(0)
+  ctr         Float    @default(0)
+  collectedAt DateTime @default(now())
+
+  @@index([postId, collectedAt])
+}
+
+model WeeklyReport {
+  id           String   @id @default(cuid())
+  periodStart  DateTime
+  periodEnd    DateTime
+  bodyMd       String
+  citedPostIds String // JSON array
+  claimsJson   String @default("[]")
+  rawModel     String? // JSON
+  createdById  String?
+  createdBy    User?    @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+  briefs       Brief[]
+}
+
+model JobRun {
+  id         String    @id @default(cuid())
+  jobName    String
+  status     String    @default("running") // running | success | failed
+  lockedAt   DateTime  @default(now())
+  finishedAt DateTime?
+  error      String?
+  meta       String? // JSON
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  ip         String?
+  meta       String? // JSON
+  createdAt  DateTime @default(now())
+}
+
+model ProviderRun {
+  id         String   @id @default(cuid())
+  provider   String
+  capability String
+  model      String?
+  status     String
+  latencyMs  Int
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([provider, capability, createdAt])
+}
+
+model RateLimitBucket {
+  key       String   @id
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+}

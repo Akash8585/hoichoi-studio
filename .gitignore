@@ -32,6 +32,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# local db / generated media
+/prisma/*.db
+/prisma/*.db-journal
+/public/generated/*
+!/public/generated/.gitkeep
 
 # vercel
 .vercel
@@ -39,3 +46,4 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.neon
