@@ -19,14 +19,17 @@ export async function POST(
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
   try {
-    const pkg = await regeneratePackage(id);
+    const result = await regeneratePackage(id);
     await writeAudit({
       userId: user!.id,
       action: "package.regenerate",
       entityType: "AssetPackage",
       entityId: id,
     });
-    return NextResponse.json({ package: pkg });
+    return NextResponse.json({
+      package: result.package,
+      siblings: result.siblings,
+    });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

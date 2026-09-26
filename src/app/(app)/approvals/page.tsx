@@ -24,9 +24,22 @@ export default function ReviewPage() {
   const { show } = useToast();
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState("");
+  const [busyIds, setBusyIds] = useState<Set<string>>(() => new Set());
+  const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(() => new Set());
   const [preflight, setPreflight] = useState<Record<string, string[]>>({});
   const [inlineError, setInlineError] = useState<Record<string, string>>({});
+
+  function addBusy(id: string) {
+    setBusyIds((current) => new Set(current).add(id));
+  }
+
+  function clearBusy(id: string) {
+    setBusyIds((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
 
   async function load() {
     setLoading(true);
@@ -50,7 +63,6 @@ export default function ReviewPage() {
   }
 
   async function save(pkg: Pkg) {
-    setBusyId(pkg.id);
     const response = await fetch(`/api/packages/${pkg.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -64,13 +76,25 @@ export default function ReviewPage() {
       }),
     });
     const payload = await response.json();
-    setBusyId("");
     if (!response.ok) throw new Error(payload.error || "Changes could not be saved");
-    show("Review edits saved", "success");
+  }
+
+  async function saveEdits(pkg: Pkg) {
+    if (busyIds.has(pkg.id)) return;
+    addBusy(pkg.id);
+    try {
+      await save(pkg);
+      show("Review edits saved", "success");
+    } catch (error) {
+      show((error as Error).message, "error");
+    } finally {
+      clearBusy(pkg.id);
+    }
   }
 
   async function approve(pkg: Pkg) {
-    setBusyId(pkg.id);
+    if (busyIds.has(pkg.id)) return;
+    addBusy(pkg.id);
     setInlineError((current) => ({ ...current, [pkg.id]: "" }));
     try {
       await save(pkg);
@@ -79,17 +103,21 @@ export default function ReviewPage() {
       if (!response.ok) throw new Error(payload.error || "Preflight failed");
       setPreflight((current) => ({ ...current, [pkg.id]: payload.preflight?.checks || [] }));
       show(`${pkg.brief.title} · ${pkg.channel.replaceAll("_", " ")} approved`, "success");
-      window.setTimeout(() => void load(), 900);
+      window.setTimeout(() => {
+        setPackages((current) => current.filter((item) => item.id !== pkg.id));
+      }, 900);
     } catch (error) {
       setInlineError((current) => ({ ...current, [pkg.id]: (error as Error).message }));
     } finally {
-      setBusyId("");
+      clearBusy(pkg.id);
     }
   }
 
   async function discardAndRegenerate(pkg: Pkg) {
+    if (busyIds.has(pkg.id)) return;
     if (!window.confirm("Discard this revision and generate a new one using your review notes?")) return;
-    setBusyId(pkg.id);
+    addBusy(pkg.id);
+    setRegeneratingIds((current) => new Set(current).add(pkg.id));
     try {
       await save(pkg);
       const discarded = await fetch(`/api/packages/${pkg.id}/discard`, { method: "POST" });
@@ -98,11 +126,28 @@ export default function ReviewPage() {
       const payload = await regenerated.json();
       if (!regenerated.ok) throw new Error(payload.error || "Regeneration failed");
       show("New revision queued. You can follow progress in the campaign workspace.", "success");
-      await load();
+      setPackages((current) => {
+        const siblingMap = new Map(
+          (Array.isArray(payload.siblings) ? payload.siblings : []).map(
+            (sibling: Pkg) => [sibling.id, sibling]
+          )
+        );
+        return current
+          .filter((item) => item.id !== pkg.id)
+          .map((item) => {
+            const sibling = siblingMap.get(item.id);
+            return sibling ? { ...item, ...sibling } : item;
+          });
+      });
     } catch (error) {
       show((error as Error).message, "error");
     } finally {
-      setBusyId("");
+      clearBusy(pkg.id);
+      setRegeneratingIds((current) => {
+        const next = new Set(current);
+        next.delete(pkg.id);
+        return next;
+      });
     }
   }
 
@@ -131,10 +176,13 @@ export default function ReviewPage() {
             const spec = PLATFORM_SPECS[channel];
             const copyLimit =
               channel === "x" ? spec.maxText : channel === "instagram_reels" ? spec.maxCaption : spec.maxDesc;
+            const pkgBusy = busyIds.has(pkg.id);
+            const regenerating = regeneratingIds.has(pkg.id);
             return (
               <PlatformPreview
                 key={pkg.id}
                 pkg={pkg}
+                imageLoading={regenerating}
                 footer={
                   <div className="space-y-5">
                     <div className="rounded-[15px] bg-black/25 p-4">
@@ -146,24 +194,24 @@ export default function ReviewPage() {
                         <span className="text-xs text-zinc-500">{spec.label}</span>
                       </div>
                       <ReviewField label="Bengali copy" count={pkg.copyBn?.length} limit={copyLimit}>
-                        <textarea value={pkg.copyBn || ""} onChange={(event) => update(pkg.id, "copyBn", event.target.value)} rows={4} className="input font-bengali resize-none" />
+                        <textarea value={pkg.copyBn || ""} onChange={(event) => update(pkg.id, "copyBn", event.target.value)} rows={4} className="input font-bengali resize-none" disabled={pkgBusy} />
                       </ReviewField>
                       <ReviewField label="English copy" count={pkg.copyEn?.length} limit={copyLimit}>
-                        <textarea value={pkg.copyEn || ""} onChange={(event) => update(pkg.id, "copyEn", event.target.value)} rows={4} className="input resize-none" />
+                        <textarea value={pkg.copyEn || ""} onChange={(event) => update(pkg.id, "copyEn", event.target.value)} rows={4} className="input resize-none" disabled={pkgBusy} />
                       </ReviewField>
                       <ReviewField label="Review notes for regeneration">
-                        <textarea value={pkg.reviewNotes || ""} onChange={(event) => update(pkg.id, "reviewNotes", event.target.value)} rows={3} placeholder="Explain exactly what should change…" className="input resize-none" />
+                        <textarea value={pkg.reviewNotes || ""} onChange={(event) => update(pkg.id, "reviewNotes", event.target.value)} rows={3} placeholder="Explain exactly what should change…" className="input resize-none" disabled={pkgBusy} />
                       </ReviewField>
                     </div>
                     <QualityPanel value={pkg.qualityChecks} />
                     <PreflightPanel checks={preflight[pkg.id] || []} />
                     {inlineError[pkg.id] && <Notice tone="danger" title="Preflight blocked approval">{inlineError[pkg.id]}</Notice>}
                     <div className="flex flex-wrap gap-2">
-                      <Button variant="secondary" loading={busyId === pkg.id} onClick={() => save(pkg)}>
+                      <Button variant="secondary" loading={pkgBusy && !regenerating} disabled={pkgBusy} onClick={() => saveEdits(pkg)}>
                         <Save className="size-4" /> Save edits
                       </Button>
-                      <Button loading={busyId === pkg.id} onClick={() => approve(pkg)}>Approve package</Button>
-                      <Button variant="danger" disabled={busyId === pkg.id} onClick={() => discardAndRegenerate(pkg)}>
+                      <Button loading={pkgBusy && !regenerating} disabled={pkgBusy} onClick={() => approve(pkg)}>Approve package</Button>
+                      <Button variant="danger" loading={regenerating} disabled={pkgBusy} onClick={() => discardAndRegenerate(pkg)}>
                         Discard & regenerate
                       </Button>
                     </div>
@@ -200,4 +248,3 @@ function ReviewField({
     </label>
   );
 }
-

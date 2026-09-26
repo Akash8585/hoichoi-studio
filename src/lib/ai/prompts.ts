@@ -50,8 +50,62 @@ X: concise conversation, 1:1, at most five hashtags.
 
 Each strategy must use a different shot scale, subject placement, camera angle, lighting,
 negative space, CTA style and hashtag convention.
+Also return sceneWorld: one English sentence, about 25 to 40 words, that translates the brief into things a camera can see. Name the place, weather, objects, and people. Use the title and must include list. If the brief is Bengali, translate the visible scene into English. Do not mention captions, hashtags, logos, or the platform name.
+
+Each visualComposition is a different camera on that SAME sceneWorld, written in English. Repeat the concrete subjects from sceneWorld in every visualComposition. Do not invent a different story. Do not fall back to a rainy car windshield, a generic alley, or a portrait unless the brief itself describes that.
+
 The visualComposition must describe a photographic film scene only. Never request a poster,
 key art, thumbnail, title card, text overlay, typography, signage, graphic design, or logo.`;
+}
+
+const NON_VISUAL =
+  /\b(hoichoi|watch now|subscribe|streaming|tonight on|cta|hashtag)\b/i;
+
+const CHANNEL_FRAMING: Record<Channel, string> = {
+  instagram_reels:
+    "Vertical 9:16, intimate medium shot, subject low in the frame, shallow depth of field",
+  youtube_shorts:
+    "Vertical 9:16, wide establishing shot, sky and place fill the upper frame",
+  x: "Square 1:1, subject centered, more negative space around them",
+};
+
+export function visualSubjectLine(input: {
+  title: string;
+  mustInclude?: string[];
+}) {
+  const english = (input.mustInclude || [])
+    .map((item) => item.trim())
+    .filter((item) => item && !NON_VISUAL.test(item));
+  const title = input.title.trim();
+  return [...english, title].filter(Boolean).join(", ");
+}
+
+export function buildChannelImagePrompt(input: {
+  channel: Channel;
+  title: string;
+  mustInclude?: string[];
+  mustAvoid?: string[];
+  sceneWorld: string;
+  visualComposition: string;
+  tone?: string;
+}) {
+  const avoid = (input.mustAvoid || [])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const lead = [
+    visualSubjectLine(input),
+    input.sceneWorld.trim(),
+    input.visualComposition.trim(),
+    input.tone?.trim(),
+    CHANNEL_FRAMING[input.channel],
+  ]
+    .filter(Boolean)
+    .join(". ");
+  const tail =
+    "Photorealistic cinematic film still of that exact scene. No text, no letters, no logo, no watermark, no poster.";
+  const without = avoid.length ? ` Do not depict: ${avoid.join(", ")}.` : "";
+  return `${lead}. ${tail}${without}`.slice(0, 900);
 }
 
 export function buildNativeCopyPrompt(input: {
@@ -132,7 +186,17 @@ export function normalizePack(
   };
 }
 
-export function fallbackPackages(briefTitle: string): GeneratedChannelPack[] {
+export function fallbackPackages(
+  briefTitle: string,
+  extras?: { body?: string; mustInclude?: string[]; mustAvoid?: string[] }
+): GeneratedChannelPack[] {
+  const sceneWorld = [extras?.body, briefTitle].filter(Boolean).join(". ").slice(0, 320);
+  const shared = {
+    title: briefTitle,
+    mustInclude: extras?.mustInclude,
+    mustAvoid: extras?.mustAvoid,
+    sceneWorld: sceneWorld || briefTitle,
+  };
   return [
     normalizePack({
       channel: "instagram_reels",
@@ -140,8 +204,12 @@ export function fallbackPackages(briefTitle: string): GeneratedChannelPack[] {
       copyEn: `${briefTitle}: feelings hit different. Watch the drop on hoichoi.`,
       hashtags: ["#hoichoi", "#BengaliDrama", "#Reels", "#OTT"],
       cta: "Tap to watch",
-      imagePrompt: `Vertical 9:16 cinematic Bengali drama film still, warm tungsten light, intimate close up, film grain, no text, no letters, no logo`,
-      videoPrompt: `9:16 vertical reel, slow dolly toward lead actor eyes, soft bokeh lights, 5s, mood for "${briefTitle}"`,
+      imagePrompt: buildChannelImagePrompt({
+        ...shared,
+        channel: "instagram_reels",
+        visualComposition: "People and place from the brief, seen up close",
+      }),
+      videoPrompt: `9:16 vertical reel of ${sceneWorld}, 5 seconds`,
     }),
     normalizePack({
       channel: "youtube_shorts",
@@ -150,8 +218,12 @@ export function fallbackPackages(briefTitle: string): GeneratedChannelPack[] {
       copyEn: `The moment everyone will rewind. Full episode of ${briefTitle} streaming on hoichoi.`,
       hashtags: ["#Shorts", "#hoichoi", "#Bengali"],
       cta: "Subscribe & watch full episode",
-      imagePrompt: `Vertical 9:16 cinematic hook frame, bold expression, high contrast, dramatic sky, no text, no letters, no logo`,
-      videoPrompt: `9:16 Shorts cutdown, quick zoom + subtle handheld, 5s hook for "${briefTitle}"`,
+      imagePrompt: buildChannelImagePrompt({
+        ...shared,
+        channel: "youtube_shorts",
+        visualComposition: "Wide view of the place and weather from the brief",
+      }),
+      videoPrompt: `9:16 Shorts of ${sceneWorld}, 5 second hook`,
     }),
     normalizePack({
       channel: "x",
@@ -159,8 +231,12 @@ export function fallbackPackages(briefTitle: string): GeneratedChannelPack[] {
       copyEn: `${briefTitle} is live. Stream now on hoichoi.`,
       hashtags: ["#hoichoi", "#BengaliOTT"],
       cta: "Watch →",
-      imagePrompt: `Square 1:1 cinematic social still, centered subject, clean negative space, no text, no letters, no logo`,
-      videoPrompt: `1:1 square short video, gentle Ken Burns on key art for "${briefTitle}", 4s`,
+      imagePrompt: buildChannelImagePrompt({
+        ...shared,
+        channel: "x",
+        visualComposition: "Centered view of the main subject from the brief",
+      }),
+      videoPrompt: `1:1 short video of ${sceneWorld}, 4 seconds`,
     }),
   ];
 }

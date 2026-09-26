@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/db/prisma";
 import { generateChannelCopy } from "@/lib/ai/generateCopy";
+import {
+  evaluateGenerationQuality,
+  reconcileQualityChecks,
+} from "@/lib/ai/quality";
+import type { GeneratedChannelPack } from "@/lib/ai/prompts";
 import { generateChannelImage } from "@/lib/images/generate";
 import { parseJsonArray, toJson } from "@/lib/utils";
 import type { Channel } from "@/lib/platforms/specs";
@@ -10,6 +15,52 @@ import {
   releaseBriefGenerationLock,
   releasePackageGenerationLock,
 } from "@/lib/storage/locks";
+
+function packageAsGeneratedPack(row: {
+  channel: string;
+  copyBn: string | null;
+  copyEn: string | null;
+  title: string | null;
+  hashtags: string | null;
+  cta: string | null;
+  imagePrompt: string | null;
+  videoPrompt: string | null;
+}): GeneratedChannelPack {
+  return {
+    channel: row.channel as Channel,
+    copyBn: row.copyBn || "",
+    copyEn: row.copyEn || "",
+    title: row.title || undefined,
+    hashtags: parseJsonArray(row.hashtags),
+    cta: row.cta || "",
+    imagePrompt: row.imagePrompt || "",
+    videoPrompt: row.videoPrompt || "",
+  };
+}
+
+function qualityPayloadForStore(
+  joint: Record<string, unknown>,
+  previousRaw?: string | null,
+  options?: { preserveHumanReview?: boolean }
+) {
+  let previous: Record<string, unknown> = {};
+  try {
+    previous = JSON.parse(previousRaw || "{}") as Record<string, unknown>;
+  } catch {
+    previous = {};
+  }
+  const keepReview =
+    options?.preserveHumanReview && previous.requiresHumanReview === true;
+  return reconcileQualityChecks({
+    ...joint,
+    ...(keepReview
+      ? {
+          requiresHumanReview: true,
+          providerError: previous.providerError,
+        }
+      : {}),
+  });
+}
 
 export async function runBriefGeneration(briefId: string) {
   await acquireBriefGenerationLock(briefId);
@@ -52,6 +103,12 @@ export async function runBriefGeneration(briefId: string) {
         fileStem: `${briefId}-${pack.channel}-${Date.now()}-img`,
       });
 
+      const qualityChecks = toJson(
+        reconcileQualityChecks(
+          (pack.qualityChecks || {}) as Record<string, unknown>
+        )
+      );
+
       await prisma.assetPackage.upsert({
         where: {
           briefId_channel: { briefId, channel: pack.channel },
@@ -80,7 +137,7 @@ export async function runBriefGeneration(briefId: string) {
           textModel: pack.textModel,
           generationStrategy: pack.generationStrategy,
           creativeDirection: pack.creativeDirection,
-          qualityChecks: toJson(pack.qualityChecks || {}),
+          qualityChecks,
         },
         update: {
           copyBn: pack.copyBn,
@@ -108,7 +165,7 @@ export async function runBriefGeneration(briefId: string) {
           textModel: pack.textModel,
           generationStrategy: pack.generationStrategy,
           creativeDirection: pack.creativeDirection,
-          qualityChecks: toJson(pack.qualityChecks || {}),
+          qualityChecks,
           revision: { increment: 1 },
         },
       });
@@ -160,7 +217,19 @@ export async function regeneratePackage(packageId: string) {
       fileStem: `${pkg.id}-regen-${Date.now()}-img`,
     });
 
-    await prisma.assetPackage.update({
+    const siblings = await prisma.assetPackage.findMany({
+      where: { briefId: pkg.briefId, id: { not: packageId } },
+    });
+    const jointQuality = evaluateGenerationQuality(
+      [...siblings.map(packageAsGeneratedPack), pack],
+      {
+        briefBody: pkg.brief.body,
+        mustInclude: parseJsonArray(pkg.brief.mustInclude),
+        mustAvoid: parseJsonArray(pkg.brief.mustAvoid),
+      }
+    );
+
+    const updated = await prisma.assetPackage.update({
       where: { id: packageId },
       data: {
         copyBn: pack.copyBn,
@@ -174,27 +243,42 @@ export async function regeneratePackage(packageId: string) {
         imageWidth: image.width,
         imageHeight: image.height,
         imageBytes: image.bytes,
-      imageStatus: image.compliant ? "ready" : "placeholder",
-      imageProvider: image.provider,
-      imageModel: image.model,
+        imageStatus: image.compliant ? "ready" : "placeholder",
+        imageProvider: image.provider,
+        imageModel: image.model,
         videoUrl: null,
         videoStatus: "deferred",
-      videoError: null,
-      videoAttempts: 0,
+        videoError: null,
+        videoAttempts: 0,
         status: "draft",
         rejectionReason: null,
         rawGeneration: toJson(pack),
-      textProvider: pack.textProvider,
-      textModel: pack.textModel,
-      generationStrategy: pack.generationStrategy,
-      creativeDirection: pack.creativeDirection,
-      qualityChecks: toJson(pack.qualityChecks || {}),
-      reviewNotes: null,
-      revision: { increment: 1 },
+        textProvider: pack.textProvider,
+        textModel: pack.textModel,
+        generationStrategy: pack.generationStrategy,
+        creativeDirection: pack.creativeDirection,
+        qualityChecks: toJson(qualityPayloadForStore(jointQuality)),
+        reviewNotes: null,
+        revision: { increment: 1 },
       },
     });
 
-    return prisma.assetPackage.findUnique({ where: { id: packageId } });
+    const updatedSiblings = await Promise.all(
+      siblings.map((sibling) =>
+        prisma.assetPackage.update({
+          where: { id: sibling.id },
+          data: {
+            qualityChecks: toJson(
+              qualityPayloadForStore(jointQuality, sibling.qualityChecks, {
+                preserveHumanReview: true,
+              })
+            ),
+          },
+        })
+      )
+    );
+
+    return { package: updated, siblings: updatedSiblings };
   } finally {
     await releasePackageGenerationLock(packageId);
   }

@@ -1,5 +1,25 @@
 import type { GeneratedChannelPack } from "@/lib/ai/prompts";
 
+/** Gates that block submit and appear in the quality panel. */
+export const HUMAN_QUALITY_KEYS = [
+  "xWithinLimit",
+  "youtubeTitleWithinLimit",
+  "requiredTermsPresent",
+  "forbiddenTermsAbsent",
+] as const;
+
+export type HumanQualityKey = (typeof HUMAN_QUALITY_KEYS)[number];
+
+/** Server-side heuristics only — never flip user-facing passed / submit. */
+export const INTERNAL_QUALITY_KEYS = [
+  "hasThreeChannels",
+  "nativeBengali",
+  "uniqueCtas",
+  "uniqueVisualDirections",
+  "lowCopySimilarity",
+  "briefAdherence",
+] as const;
+
 function words(value: string) {
   return new Set(
     value
@@ -23,6 +43,40 @@ export function bengaliScriptRatio(value: string) {
   if (!letters.length) return 0;
   const bengali = letters.filter((char) => /[\u0980-\u09FF]/u.test(char));
   return bengali.length / letters.length;
+}
+
+/**
+ * Submit / UI readiness. Ignores internal distinctness heuristics so older
+ * stored JSON with `passed: false` solely from lowCopySimilarity still unlocks.
+ */
+export function humanQualityPassed(quality: Record<string, unknown>): boolean {
+  if (quality.requiresHumanReview === true) {
+    return false;
+  }
+  if (HUMAN_QUALITY_KEYS.some((key) => quality[key] === false)) {
+    return false;
+  }
+  if (HUMAN_QUALITY_KEYS.some((key) => key in quality)) {
+    return true;
+  }
+  // Legacy blobs without per-gate keys: unlock when only internal flags failed.
+  if (
+    quality.passed === false &&
+    INTERNAL_QUALITY_KEYS.some((key) => quality[key] === false)
+  ) {
+    return true;
+  }
+  return quality.passed === true;
+}
+
+/** Rewrite `passed` from human gates only (safe for already-stored rows). */
+export function reconcileQualityChecks(
+  quality: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...quality,
+    passed: humanQualityPassed(quality),
+  };
 }
 
 export function evaluateGenerationQuality(
@@ -85,10 +139,15 @@ export function evaluateGenerationQuality(
     }
   }
 
+  const humanPassed = HUMAN_QUALITY_KEYS.every((key) => checks[key]);
+  const internalPassed = INTERNAL_QUALITY_KEYS.every((key) => checks[key]);
+
   return {
     ...checks,
-    passed: Object.values(checks).every(Boolean),
+    /** True when human-actionable gates pass. Internal heuristics do not flip this. */
+    passed: humanPassed,
+    /** Server-side repair trigger; includes distinctness heuristics. */
+    needsRepair: !humanPassed || !internalPassed,
     strategy: "independent-source-brief-generation",
   };
 }
-

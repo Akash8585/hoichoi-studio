@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { Button, Notice, PageHeader, Skeleton } from "@/components/ui/core";
@@ -8,6 +8,7 @@ import { useToast } from "@/components/ui/Toast";
 import { PlatformPreview, type PreviewPackage } from "@/components/platform/PlatformPreview";
 import { QualityPanel, parseQuality } from "@/components/platform/QualityPanel";
 import { PipelineStepper, workflowStep } from "@/components/workflow/PipelineStepper";
+import { humanQualityPassed } from "@/lib/ai/quality";
 
 type Pkg = PreviewPackage & {
   textProvider?: string | null;
@@ -49,6 +50,11 @@ export default function StudioClient() {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [loading, setLoading] = useState(Boolean(briefId));
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [busyPackageIds, setBusyPackageIds] = useState<Set<string>>(() => new Set());
+  const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(() => new Set());
+  const busyPackageIdsRef = useRef(busyPackageIds);
+  busyPackageIdsRef.current = busyPackageIds;
   const [form, setForm] = useState({
     title: "",
     body: "",
@@ -132,8 +138,60 @@ export default function StudioClient() {
     }
   }
 
+  async function deleteCampaign() {
+    if (!brief) return;
+    if (
+      !window.confirm(
+        "Delete this campaign? This removes its images and posts."
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const response = await fetch(`/api/briefs/${brief.id}`, { method: "DELETE" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not delete campaign");
+      }
+      show("Campaign deleted", "success");
+      router.push("/");
+    } catch (error) {
+      show((error as Error).message, "error");
+      setDeleting(false);
+    }
+  }
+
+  function addPackageBusy(id: string) {
+    setBusyPackageIds((current) => new Set(current).add(id));
+  }
+
+  function clearPackageBusy(id: string) {
+    setBusyPackageIds((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  function patchPackage(updated: Pkg) {
+    setBrief((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        packages: current.packages.map((pkg) =>
+          pkg.id === updated.id ? { ...pkg, ...updated } : pkg
+        ),
+      };
+    });
+  }
+
   async function packageAction(pkg: Pkg, action: "submit" | "regenerate") {
-    setBusy(true);
+    if (busyPackageIdsRef.current.has(pkg.id)) return;
+    addPackageBusy(pkg.id);
+    if (action === "regenerate") {
+      setRegeneratingIds((current) => new Set(current).add(pkg.id));
+    }
     try {
       const response = await fetch(`/api/packages/${pkg.id}/${action}`, { method: "POST" });
       const payload = await response.json();
@@ -141,14 +199,28 @@ export default function StudioClient() {
       show(
         action === "submit"
           ? `${pkg.channel.replaceAll("_", " ")} sent to Review`
-          : "A new revision is processing",
+          : "A new revision is ready",
         "success"
       );
-      if (brief) await loadBrief(brief.id);
+      if (payload.package) {
+        patchPackage(payload.package as Pkg);
+      }
+      if (Array.isArray(payload.siblings)) {
+        for (const sibling of payload.siblings as Pkg[]) {
+          patchPackage(sibling);
+        }
+      }
     } catch (error) {
       show((error as Error).message, "error");
     } finally {
-      setBusy(false);
+      clearPackageBusy(pkg.id);
+      if (action === "regenerate") {
+        setRegeneratingIds((current) => {
+          const next = new Set(current);
+          next.delete(pkg.id);
+          return next;
+        });
+      }
     }
   }
 
@@ -225,11 +297,21 @@ export default function StudioClient() {
         title={brief.title}
         description={brief.objective || brief.body}
         actions={
-          packages.length === 0 ? (
-            <Button loading={busy} onClick={() => generate(brief.id)}>
-              Generate assets <Sparkles className="size-4" />
+          <>
+            {packages.length === 0 ? (
+              <Button loading={busy} disabled={deleting} onClick={() => generate(brief.id)}>
+                Generate assets <Sparkles className="size-4" />
+              </Button>
+            ) : null}
+            <Button
+              variant="danger"
+              loading={deleting}
+              disabled={busy || deleting}
+              onClick={() => void deleteCampaign()}
+            >
+              Delete campaign
             </Button>
-          ) : undefined
+          </>
         }
       />
       <section className="surface-card p-5">
@@ -259,15 +341,17 @@ export default function StudioClient() {
       <section className="space-y-6">
         {packages.map((pkg) => {
           const quality = parseQuality(pkg.qualityChecks);
+          const pkgBusy = busyPackageIds.has(pkg.id);
+          const regenerating = regeneratingIds.has(pkg.id);
           const ready =
             pkg.imageStatus === "ready" &&
             pkg.imageProvider !== "svg_fallback" &&
-            quality.passed === true &&
-            quality.requiresHumanReview !== true;
+            humanQualityPassed(quality);
           return (
             <PlatformPreview
               key={pkg.id}
               pkg={pkg}
+              imageLoading={regenerating}
               footer={
                 <div className="space-y-4">
                   <QualityPanel value={pkg.qualityChecks} />
@@ -277,10 +361,19 @@ export default function StudioClient() {
                     </p>
                   )}
                   <div className="flex flex-wrap gap-2">
-                    <Button disabled={!ready || busy} onClick={() => packageAction(pkg, "submit")}>
+                    <Button
+                      disabled={!ready || pkgBusy}
+                      loading={pkgBusy && !regenerating}
+                      onClick={() => packageAction(pkg, "submit")}
+                    >
                       Submit for review
                     </Button>
-                    <Button variant="secondary" disabled={busy} onClick={() => packageAction(pkg, "regenerate")}>
+                    <Button
+                      variant="secondary"
+                      loading={regenerating}
+                      disabled={pkgBusy}
+                      onClick={() => packageAction(pkg, "regenerate")}
+                    >
                       Regenerate
                     </Button>
                   </div>

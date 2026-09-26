@@ -1,16 +1,16 @@
 import { CheckCircle2, XCircle } from "lucide-react";
+import {
+  HUMAN_QUALITY_KEYS,
+  humanQualityPassed,
+  type HumanQualityKey,
+} from "@/lib/ai/quality";
 
-const QUALITY_LABELS: Record<string, string> = {
-  hasThreeChannels: "All three channels are covered",
-  nativeBengali: "Bengali reads as native",
+/** Checks a human can act on. Internal generation heuristics stay server-side only. */
+const HUMAN_QUALITY_LABELS: Record<HumanQualityKey, string> = {
   xWithinLimit: "The X post is short enough",
   youtubeTitleWithinLimit: "The YouTube title is short enough",
-  uniqueCtas: "Each channel has its own call to action",
-  uniqueVisualDirections: "Each channel has its own visual",
-  lowCopySimilarity: "The channel copy is not repeated",
   requiredTermsPresent: "Your required terms are in the copy",
   forbiddenTermsAbsent: "Nothing from the avoid list appears",
-  briefAdherence: "The copy stays on the brief",
 };
 
 export function parseQuality(value?: string | null) {
@@ -22,21 +22,27 @@ export function parseQuality(value?: string | null) {
 }
 
 function qualityIssues(quality: Record<string, unknown>) {
-  return Object.entries(quality)
-    .filter(
-      ([key, item]) =>
-        item === false && !["passed", "requiresHumanReview"].includes(key)
-    )
-    .map(([key]) => QUALITY_LABELS[key] || "Something needs a closer look");
+  const issues = HUMAN_QUALITY_KEYS.filter((key) => quality[key] === false).map(
+    (key) => HUMAN_QUALITY_LABELS[key]
+  );
+  if (quality.requiresHumanReview === true) {
+    issues.push("This backup copy still needs a human read");
+  }
+  return issues;
 }
 
 export function QualityPanel({ value }: { value?: string | null }) {
   const quality = parseQuality(value);
   const issues = qualityIssues(quality);
-  const hasResult = typeof quality.passed === "boolean";
+  const hasResult =
+    typeof quality.passed === "boolean" ||
+    quality.requiresHumanReview === true ||
+    HUMAN_QUALITY_KEYS.some((key) => key in quality);
   if (!hasResult) return null;
 
-  if (quality.passed && !issues.length) {
+  if (!issues.length) {
+    // Internal-only failures (e.g. lowCopySimilarity) must not hide Ready.
+    if (!humanQualityPassed(quality)) return null;
     return (
       <div className="flex items-center gap-2 text-sm text-emerald-300">
         <CheckCircle2 className="size-4 shrink-0" aria-hidden />

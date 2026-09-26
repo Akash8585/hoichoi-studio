@@ -1,3 +1,5 @@
+import { humanQualityPassed } from "@/lib/ai/quality";
+
 export type PackageStatus =
   | "draft"
   | "pending_approval"
@@ -29,7 +31,9 @@ export function imageAssetsReady(pkg: {
 }): boolean {
   let qualityPassed = false;
   try {
-    qualityPassed = JSON.parse(pkg.qualityChecks || "{}").passed === true;
+    qualityPassed = humanQualityPassed(
+      JSON.parse(pkg.qualityChecks || "{}") as Record<string, unknown>
+    );
   } catch {
     qualityPassed = false;
   }

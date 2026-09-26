@@ -1,19 +1,25 @@
 import {
   buildNativeCopyPrompt,
   buildStrategyPrompt,
+  buildChannelImagePrompt,
   fallbackPackages,
   normalizePack,
+  visualSubjectLine,
   type ChannelStrategy,
   type GeneratedChannelPack,
 } from "@/lib/ai/prompts";
 import { CHANNELS } from "@/lib/platforms/specs";
 import { generateStructured } from "@/lib/ai/providers";
-import { evaluateGenerationQuality } from "@/lib/ai/quality";
+import {
+  evaluateGenerationQuality,
+  reconcileQualityChecks,
+} from "@/lib/ai/quality";
 import { z } from "zod";
 
 const channelEnum = z.enum(["instagram_reels", "youtube_shorts", "x"]);
 
 const strategySchema = z.object({
+  sceneWorld: z.string().min(20),
   strategies: z
     .array(
       z.object({
@@ -45,8 +51,9 @@ const copySchema = z.object({
 const strategyJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["strategies"],
+  required: ["sceneWorld", "strategies"],
   properties: {
+    sceneWorld: { type: "string" },
     strategies: {
       type: "array",
       minItems: 3,
@@ -155,12 +162,22 @@ async function generateWithProviders(input: {
   const strategy = await generateStructured({
     schemaName: "channel_strategy",
     schema: strategyJsonSchema,
-    validate: (value) => strategySchema.parse(value),
+    validate: (value) => {
+      const raw = value as { sceneWorld?: string };
+      const subject = visualSubjectLine(input);
+      if (!raw.sceneWorld || raw.sceneWorld.trim().length < 20) {
+        raw.sceneWorld = `${subject}. ${input.body}`.trim().slice(0, 400);
+      }
+      if (raw.sceneWorld.trim().length < 20) {
+        raw.sceneWorld = `${raw.sceneWorld} filmed as a cinematic scene.`;
+      }
+      return strategySchema.parse(raw);
+    },
     messages: [
       {
         role: "system",
         content:
-          "You are a creative strategist working across platforms. Make channel outputs visibly and linguistically different.",
+          "You are a creative strategist working across platforms. Make channel outputs visibly and linguistically different. The pictures must show the brief, not a generic city.",
       },
       { role: "user", content: buildStrategyPrompt(input) },
     ],
@@ -201,9 +218,17 @@ async function generateWithProviders(input: {
         title: english.title || bengali.title,
         hashtags: english.hashtags,
         cta: english.cta,
-        creativeDirection: JSON.stringify(direction),
-        imagePrompt: `Photorealistic cinematic film still, not a poster. ${visualScene}. ${direction.tone}. Story context: ${briefContext}. Channel composition: ${direction.channel}. Pure photographic scene only: no text, no letters, no captions, no typography, no title, no logo, no watermark, no signage, no cropped faces. Obey all required and forbidden constraints.`,
-        videoPrompt: `${direction.videoMotion}. ${direction.visualComposition}. A five second cinematic promo for "${input.title}", ${direction.tone}. Source brief: ${briefContext}. Obey all required and forbidden constraints.`,
+        creativeDirection: JSON.stringify({ ...direction, sceneWorld: strategy.data.sceneWorld }),
+        imagePrompt: buildChannelImagePrompt({
+          channel: direction.channel,
+          title: input.title,
+          mustInclude: input.mustInclude,
+          mustAvoid: input.mustAvoid,
+          sceneWorld: strategy.data.sceneWorld,
+          visualComposition: visualScene,
+          tone: direction.tone,
+        }),
+        videoPrompt: `${strategy.data.sceneWorld}. ${direction.videoMotion}. ${visualScene}. A five second cinematic promo for "${input.title}", ${direction.tone}. Source brief: ${briefContext}. Obey all required and forbidden constraints.`,
         textProvider: `${strategy.provider},${bn.provider},${en.provider}`,
         textModel: `${strategy.model},${bn.model},${en.model}`,
         generationStrategy: "independent-source-brief-generation",
@@ -218,7 +243,7 @@ async function generateWithProviders(input: {
     mustAvoid: input.mustAvoid,
   };
   let quality = evaluateGenerationQuality(packs, qualityContext);
-  if (!quality.passed) {
+  if (quality.needsRepair) {
     const repair = await Promise.all([
       generateNative(
         input,
@@ -236,7 +261,8 @@ async function generateWithProviders(input: {
     packs = merge(repair[0], repair[1]);
     quality = evaluateGenerationQuality(packs, qualityContext);
   }
-  return packs.map((pack) => ({ ...pack, qualityChecks: quality }));
+  const qualityChecks = reconcileQualityChecks(quality);
+  return packs.map((pack) => ({ ...pack, qualityChecks }));
 }
 
 export async function generateChannelCopy(input: {
@@ -253,7 +279,11 @@ export async function generateChannelCopy(input: {
   try {
     return await generateWithProviders(input);
   } catch (error) {
-    const packs = fallbackPackages(input.title);
+    const packs = fallbackPackages(input.title, {
+      body: input.body,
+      mustInclude: input.mustInclude,
+      mustAvoid: input.mustAvoid,
+    });
     const quality = evaluateGenerationQuality(packs, {
       briefBody: input.body,
       mustInclude: input.mustInclude,
@@ -264,11 +294,11 @@ export async function generateChannelCopy(input: {
       textProvider: "deterministic-fallback",
       textModel: "native-template-v1",
       generationStrategy: "independent-fallback-copy",
-      qualityChecks: {
+      qualityChecks: reconcileQualityChecks({
         ...quality,
         providerError: (error as Error).message,
         requiresHumanReview: true,
-      },
+      }),
     }));
   }
 }

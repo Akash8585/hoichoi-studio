@@ -77,6 +77,14 @@ export async function generateCloudflareImage(input: {
     process.env.CLOUDFLARE_IMAGE_MODEL ||
     "@cf/bytedance/stable-diffusion-xl-lightning";
   const spec = PLATFORM_SPECS[input.channel];
+  const avoidMark = " Do not depict: ";
+  const avoidAt = input.prompt.indexOf(avoidMark);
+  const positive =
+    avoidAt === -1 ? input.prompt : input.prompt.slice(0, avoidAt);
+  const avoid =
+    avoidAt === -1
+      ? ""
+      : input.prompt.slice(avoidAt + avoidMark.length).replace(/\.$/, "");
   const generationSize =
     input.channel === "x"
       ? { width: 1024, height: 1024 }
@@ -97,16 +105,16 @@ export async function generateCloudflareImage(input: {
         body: JSON.stringify(
           model.includes("stable-diffusion")
             ? {
-                prompt: input.prompt,
+                prompt: positive,
                 negative_prompt:
-                  "text, letters, words, typography, title, logo, watermark, subtitles, captions, poster design, signage, deformed face, cropped face, blurry",
+                  `text, letters, words, typography, title, logo, watermark, subtitles, captions, poster design, signage, deformed face, cropped face, blurry${avoid ? `, ${avoid}` : ""}`,
                 width: generationSize.width,
                 height: generationSize.height,
                 num_steps: 4,
                 guidance: 7.5,
               }
             : {
-                prompt: input.prompt,
+                prompt: positive,
                 steps: 4,
               }
         ),
@@ -218,7 +226,7 @@ export async function generatePollinationsImage(input: {
   const spec = PLATFORM_SPECS[input.channel];
   // Alias `flux` remains valid; catalog IDs use publisher/model (e.g. black-forest-labs/flux-schnell).
   const model = process.env.POLLINATIONS_IMAGE_MODEL || "flux";
-  const encoded = encodeURIComponent(input.prompt.slice(0, 400));
+  const encoded = encodeURIComponent(input.prompt.slice(0, 1000));
   const url = `${POLLINATIONS_GEN_BASE}/image/${encoded}?model=${encodeURIComponent(model)}&width=${spec.w}&height=${spec.h}&nologo=true`;
 
   const res = await fetch(url, {

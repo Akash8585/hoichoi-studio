@@ -10,7 +10,7 @@ import { METRIC_SOURCE, seedMetrics } from "@/lib/insights/metrics";
 import { PLATFORM_SPECS } from "@/lib/platforms/specs";
 import { assertWithinLimit } from "@/lib/storage";
 import { MVP_MAX_IMAGE_BYTES } from "@/lib/storage/limits";
-import { evaluateGenerationQuality } from "@/lib/ai/quality";
+import { evaluateGenerationQuality, humanQualityPassed, reconcileQualityChecks } from "@/lib/ai/quality";
 import { fallbackPackages } from "@/lib/ai/prompts";
 import { validateReportClaims } from "@/lib/insights/report";
 import sharp from "sharp";
@@ -193,6 +193,76 @@ describe("status machine", () => {
       })
     ).toBe(false);
   });
+
+  it("does not block submit on internal copy-similarity alone", () => {
+    expect(
+      imageAssetsReady({
+        imageStatus: "ready",
+        imageProvider: "cloudflare-workers-ai",
+        qualityChecks: JSON.stringify({
+          passed: false,
+          lowCopySimilarity: false,
+          xWithinLimit: true,
+          youtubeTitleWithinLimit: true,
+          requiredTermsPresent: true,
+          forbiddenTermsAbsent: true,
+        }),
+      })
+    ).toBe(true);
+    expect(
+      imageAssetsReady({
+        imageStatus: "ready",
+        imageProvider: "cloudflare-workers-ai",
+        qualityChecks: JSON.stringify({
+          passed: false,
+          lowCopySimilarity: true,
+          xWithinLimit: true,
+          youtubeTitleWithinLimit: true,
+          requiredTermsPresent: false,
+          forbiddenTermsAbsent: true,
+        }),
+      })
+    ).toBe(false);
+  });
+
+  it("blocks submit when fallback copy requires human review", () => {
+    expect(
+      imageAssetsReady({
+        imageStatus: "ready",
+        imageProvider: "cloudflare-workers-ai",
+        qualityChecks: JSON.stringify({
+          passed: true,
+          requiresHumanReview: true,
+          xWithinLimit: true,
+          youtubeTitleWithinLimit: true,
+          requiredTermsPresent: true,
+          forbiddenTermsAbsent: true,
+        }),
+      })
+    ).toBe(false);
+  });
+
+  it("unlocks legacy rows where passed is false only from internal flags", () => {
+    expect(
+      humanQualityPassed({
+        passed: false,
+        lowCopySimilarity: false,
+        uniqueCtas: false,
+      })
+    ).toBe(true);
+    expect(
+      humanQualityPassed(
+        reconcileQualityChecks({
+          passed: false,
+          lowCopySimilarity: false,
+          xWithinLimit: true,
+          youtubeTitleWithinLimit: true,
+          requiredTermsPresent: true,
+          forbiddenTermsAbsent: true,
+        })
+      )
+    ).toBe(true);
+  });
 });
 
 describe("metrics", () => {
@@ -209,6 +279,17 @@ describe("generation quality", () => {
     expect(quality.hasThreeChannels).toBe(true);
     expect(quality.nativeBengali).toBe(true);
     expect(quality.uniqueVisualDirections).toBe(true);
+  });
+
+  it("never lets internal similarity fail the user-facing passed gate", () => {
+    const packs = fallbackPackages("পরীক্ষা");
+    packs[1].copyBn = packs[0].copyBn;
+    packs[1].copyEn = packs[0].copyEn;
+    const quality = evaluateGenerationQuality(packs);
+    expect(quality.lowCopySimilarity).toBe(false);
+    expect(quality.passed).toBe(true);
+    expect(quality.needsRepair).toBe(true);
+    expect(humanQualityPassed(quality)).toBe(true);
   });
 
   it("enforces brief-specific include and avoid constraints", () => {
